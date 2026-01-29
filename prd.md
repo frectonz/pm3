@@ -297,7 +297,7 @@ Every step must be thoroughly tested before moving to the next. No exceptions.
    - Integration: daemon handles multiple sequential connections
    - Integration: daemon won't start if another instance is already running (PID file check)
 
-6. Process spawning — spawn child process with `command` and `cwd`, track PID
+6. ~~Process spawning — spawn child process with `command` and `cwd`, track PID~~ **DONE**
    - Integration: spawn `sleep 999`, verify PID is tracked and process is running
    - Integration: spawn with `cwd`, verify child's working directory
    - Unit: command string splits into program + args correctly

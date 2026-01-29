@@ -4,4 +4,5 @@ pub mod config;
 pub mod daemon;
 pub mod paths;
 pub mod pid;
+pub mod process;
 pub mod protocol;

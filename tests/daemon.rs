@@ -1,10 +1,39 @@
+use pm3::config::ProcessConfig;
 use pm3::daemon;
 use pm3::paths::Paths;
 use pm3::protocol::{self, Request, Response};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 use tempfile::TempDir;
+
+fn test_config(command: &str) -> ProcessConfig {
+    ProcessConfig {
+        command: command.to_string(),
+        cwd: None,
+        env: None,
+        env_file: None,
+        health_check: None,
+        kill_timeout: None,
+        kill_signal: None,
+        max_restarts: None,
+        max_memory: None,
+        min_uptime: None,
+        stop_exit_codes: None,
+        watch: None,
+        watch_ignore: None,
+        depends_on: None,
+        restart: None,
+        group: None,
+        pre_start: None,
+        post_stop: None,
+        notify: None,
+        cron_restart: None,
+        log_date_format: None,
+        environments: HashMap::new(),
+    }
+}
 
 async fn start_test_daemon(paths: &Paths) -> tokio::task::JoinHandle<color_eyre::Result<()>> {
     let p = paths.clone();
@@ -116,6 +145,102 @@ async fn test_daemon_rejects_duplicate_instance() {
         err_msg.contains("already running"),
         "error should mention 'already running', got: {err_msg}"
     );
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_spawn_process_tracks_pid() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    // Start a long-running process
+    let mut configs = HashMap::new();
+    configs.insert("sleeper".to_string(), test_config("sleep 999"));
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    // List and verify the process appears
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            let info = &processes[0];
+            assert_eq!(info.name, "sleeper");
+            assert!(info.pid.is_some(), "PID should be present");
+            assert_eq!(
+                info.status,
+                pm3::protocol::ProcessStatus::Online
+            );
+
+            // Verify PID is alive
+            let pid = nix::unistd::Pid::from_raw(info.pid.unwrap() as i32);
+            assert!(
+                nix::sys::signal::kill(pid, None).is_ok(),
+                "process should be alive"
+            );
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_spawn_with_cwd() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    // Create a subdirectory to use as cwd
+    let cwd_dir = dir.path().join("workdir");
+    std::fs::create_dir_all(&cwd_dir).unwrap();
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut config = test_config("sh -c 'pwd > output.txt'");
+    config.cwd = Some(cwd_dir.to_str().unwrap().to_string());
+
+    let mut configs = HashMap::new();
+    configs.insert("pwd-test".to_string(), config);
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    // Wait for the child to finish writing
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let output_file = cwd_dir.join("output.txt");
+    assert!(output_file.exists(), "output.txt should have been created");
+
+    let output = std::fs::read_to_string(&output_file).unwrap();
+    let actual = std::fs::canonicalize(output.trim()).unwrap();
+    let expected = std::fs::canonicalize(&cwd_dir).unwrap();
+    assert_eq!(actual, expected);
 
     send_raw_request(&paths, &Request::Kill).await;
     let _ = handle.await;
