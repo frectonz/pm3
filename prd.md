@@ -286,7 +286,7 @@ Every step must be thoroughly tested before moving to the next. No exceptions.
    - Unit: every `Response` variant serializes and deserializes roundtrip
    - Unit: malformed JSON returns a clear error
 
-4. CLI parsing — clap subcommands: `start`, `stop`, `restart`, `list`, `kill`
+4. ~~CLI parsing — clap subcommands: `start`, `stop`, `restart`, `list`, `kill`~~ **DONE**
    - Unit: each subcommand parses correctly from arg strings
    - Unit: `start` with no name → `names: None`, `start web` → `names: Some(["web"])`
    - Unit: unknown subcommand errors
