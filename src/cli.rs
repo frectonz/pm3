@@ -3,8 +3,11 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "pm3", about = "A Rust process manager")]
 pub struct Cli {
+    #[arg(long, hide = true)]
+    pub daemon: bool,
+
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -66,7 +69,7 @@ mod tests {
     #[test]
     fn test_start_no_args() {
         let cli = Cli::try_parse_from(["pm3", "start"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Start { names, env } => {
                 assert!(names.is_empty());
                 assert!(env.is_none());
@@ -78,7 +81,7 @@ mod tests {
     #[test]
     fn test_stop_no_args() {
         let cli = Cli::try_parse_from(["pm3", "stop"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Stop { names } => assert!(names.is_empty()),
             _ => panic!("expected Stop"),
         }
@@ -87,7 +90,7 @@ mod tests {
     #[test]
     fn test_restart_no_args() {
         let cli = Cli::try_parse_from(["pm3", "restart"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Restart { names } => assert!(names.is_empty()),
             _ => panic!("expected Restart"),
         }
@@ -96,13 +99,13 @@ mod tests {
     #[test]
     fn test_list() {
         let cli = Cli::try_parse_from(["pm3", "list"]).unwrap();
-        assert!(matches!(cli.command, Command::List));
+        assert!(matches!(cli.command.unwrap(), Command::List));
     }
 
     #[test]
     fn test_kill() {
         let cli = Cli::try_parse_from(["pm3", "kill"]).unwrap();
-        assert!(matches!(cli.command, Command::Kill));
+        assert!(matches!(cli.command.unwrap(), Command::Kill));
     }
 
     // Names handling
@@ -110,7 +113,7 @@ mod tests {
     #[test]
     fn test_start_with_name() {
         let cli = Cli::try_parse_from(["pm3", "start", "web"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Start { names, .. } => assert_eq!(names, vec!["web"]),
             _ => panic!("expected Start"),
         }
@@ -119,7 +122,7 @@ mod tests {
     #[test]
     fn test_start_with_multiple_names() {
         let cli = Cli::try_parse_from(["pm3", "start", "web", "api"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Start { names, .. } => assert_eq!(names, vec!["web", "api"]),
             _ => panic!("expected Start"),
         }
@@ -128,7 +131,7 @@ mod tests {
     #[test]
     fn test_start_with_env() {
         let cli = Cli::try_parse_from(["pm3", "start", "--env", "production"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Start { names, env } => {
                 assert!(names.is_empty());
                 assert_eq!(env.as_deref(), Some("production"));
@@ -140,7 +143,7 @@ mod tests {
     #[test]
     fn test_start_with_name_and_env() {
         let cli = Cli::try_parse_from(["pm3", "start", "web", "--env", "staging"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Start { names, env } => {
                 assert_eq!(names, vec!["web"]);
                 assert_eq!(env.as_deref(), Some("staging"));
@@ -154,13 +157,13 @@ mod tests {
     #[test]
     fn test_reload() {
         let cli = Cli::try_parse_from(["pm3", "reload"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Reload { names } => assert!(names.is_empty()),
             _ => panic!("expected Reload"),
         }
 
         let cli = Cli::try_parse_from(["pm3", "reload", "web"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Reload { names } => assert_eq!(names, vec!["web"]),
             _ => panic!("expected Reload"),
         }
@@ -169,7 +172,7 @@ mod tests {
     #[test]
     fn test_info() {
         let cli = Cli::try_parse_from(["pm3", "info", "web"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Info { name } => assert_eq!(name, "web"),
             _ => panic!("expected Info"),
         }
@@ -178,7 +181,7 @@ mod tests {
     #[test]
     fn test_signal() {
         let cli = Cli::try_parse_from(["pm3", "signal", "web", "SIGHUP"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Signal { name, signal } => {
                 assert_eq!(name, "web");
                 assert_eq!(signal, "SIGHUP");
@@ -190,25 +193,25 @@ mod tests {
     #[test]
     fn test_save() {
         let cli = Cli::try_parse_from(["pm3", "save"]).unwrap();
-        assert!(matches!(cli.command, Command::Save));
+        assert!(matches!(cli.command.unwrap(), Command::Save));
     }
 
     #[test]
     fn test_resurrect() {
         let cli = Cli::try_parse_from(["pm3", "resurrect"]).unwrap();
-        assert!(matches!(cli.command, Command::Resurrect));
+        assert!(matches!(cli.command.unwrap(), Command::Resurrect));
     }
 
     #[test]
     fn test_flush() {
         let cli = Cli::try_parse_from(["pm3", "flush"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Flush { names } => assert!(names.is_empty()),
             _ => panic!("expected Flush"),
         }
 
         let cli = Cli::try_parse_from(["pm3", "flush", "web"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Flush { names } => assert_eq!(names, vec!["web"]),
             _ => panic!("expected Flush"),
         }
@@ -217,7 +220,7 @@ mod tests {
     #[test]
     fn test_log_defaults() {
         let cli = Cli::try_parse_from(["pm3", "log"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Log {
                 name,
                 lines,
@@ -234,7 +237,7 @@ mod tests {
     #[test]
     fn test_log_with_options() {
         let cli = Cli::try_parse_from(["pm3", "log", "web", "--lines", "50", "-f"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Log {
                 name,
                 lines,
@@ -251,7 +254,7 @@ mod tests {
     #[test]
     fn test_list_view_alias() {
         let cli = Cli::try_parse_from(["pm3", "view"]).unwrap();
-        assert!(matches!(cli.command, Command::List));
+        assert!(matches!(cli.command.unwrap(), Command::List));
     }
 
     // Error cases
@@ -269,6 +272,22 @@ mod tests {
     #[test]
     fn test_signal_missing_args() {
         assert!(Cli::try_parse_from(["pm3", "signal"]).is_err());
+    }
+
+    // Daemon flag
+
+    #[test]
+    fn test_daemon_flag() {
+        let cli = Cli::try_parse_from(["pm3", "--daemon"]).unwrap();
+        assert!(cli.daemon);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_no_args_no_command() {
+        let cli = Cli::try_parse_from(["pm3"]).unwrap();
+        assert!(!cli.daemon);
+        assert!(cli.command.is_none());
     }
 
     // Helper

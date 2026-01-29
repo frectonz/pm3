@@ -1,12 +1,16 @@
+use color_eyre::eyre::bail;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub struct Paths {
     data_dir: PathBuf,
 }
 
 impl Paths {
-    pub fn new() -> Result<Self, &'static str> {
-        let base = dirs::data_dir().ok_or("could not determine data directory")?;
+    pub fn new() -> color_eyre::Result<Self> {
+        let Some(base) = dirs::data_dir() else {
+            bail!("could not determine data directory");
+        };
         Ok(Self {
             data_dir: base.join("pm3"),
         })

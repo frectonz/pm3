@@ -291,7 +291,7 @@ Every step must be thoroughly tested before moving to the next. No exceptions.
    - Unit: `start` with no name → `names: None`, `start web` → `names: Some(["web"])`
    - Unit: unknown subcommand errors
 
-5. Daemon — daemonize, bind Unix socket, accept connections, dispatch requests
+5. ~~Daemon — daemonize, bind Unix socket, accept connections, dispatch requests~~ **DONE**
    - Integration: daemon starts, PID file is created, socket file exists
    - Integration: client connects, sends a request, gets a response
    - Integration: daemon handles multiple sequential connections
