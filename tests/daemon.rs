@@ -1,7 +1,7 @@
-use pm3::config::ProcessConfig;
+use pm3::config::{self, ProcessConfig};
 use pm3::daemon;
 use pm3::paths::Paths;
-use pm3::protocol::{self, Request, Response};
+use pm3::protocol::{self, ProcessStatus, Request, Response};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -241,6 +241,446 @@ async fn test_spawn_with_cwd() {
     let actual = std::fs::canonicalize(output.trim()).unwrap();
     let expected = std::fs::canonicalize(&cwd_dir).unwrap();
     assert_eq!(actual, expected);
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_capture_stdout() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut configs = HashMap::new();
+    configs.insert("echoer".to_string(), test_config("sh -c 'echo hello'"));
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let stdout_log = paths.stdout_log("echoer");
+    assert!(stdout_log.exists(), "stdout log file should exist");
+    let content = std::fs::read_to_string(&stdout_log).unwrap();
+    assert!(
+        content.contains("hello"),
+        "stdout log should contain 'hello', got: {content}"
+    );
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_capture_stderr() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut configs = HashMap::new();
+    configs.insert(
+        "err-writer".to_string(),
+        test_config("sh -c 'echo error >&2'"),
+    );
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let stderr_log = paths.stderr_log("err-writer");
+    assert!(stderr_log.exists(), "stderr log file should exist");
+    let content = std::fs::read_to_string(&stderr_log).unwrap();
+    assert!(
+        content.contains("error"),
+        "stderr log should contain 'error', got: {content}"
+    );
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_directory_created() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    // Verify log dir doesn't exist yet
+    assert!(!paths.log_dir().exists(), "log dir should not exist yet");
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut configs = HashMap::new();
+    configs.insert("logtest".to_string(), test_config("sleep 999"));
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    assert!(
+        paths.log_dir().exists(),
+        "log directory should have been created"
+    );
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_start_one_process_from_config() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let config_path = dir.path().join("pm3.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[sleeper]
+command = "sleep 999"
+"#,
+    )
+    .unwrap();
+
+    let configs = config::load_config(&config_path).unwrap();
+
+    let handle = start_test_daemon(&paths).await;
+
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            assert_eq!(processes[0].name, "sleeper");
+            assert_eq!(processes[0].status, pm3::protocol::ProcessStatus::Online);
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_start_two_processes_from_config() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let config_path = dir.path().join("pm3.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[sleeper1]
+command = "sleep 999"
+
+[sleeper2]
+command = "sleep 999"
+"#,
+    )
+    .unwrap();
+
+    let configs = config::load_config(&config_path).unwrap();
+
+    let handle = start_test_daemon(&paths).await;
+
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 2);
+            let mut names: Vec<&str> = processes.iter().map(|p| p.name.as_str()).collect();
+            names.sort();
+            assert_eq!(names, vec!["sleeper1", "sleeper2"]);
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_start_named_process_from_config() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let config_path = dir.path().join("pm3.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[web]
+command = "sleep 999"
+
+[worker]
+command = "sleep 999"
+"#,
+    )
+    .unwrap();
+
+    let configs = config::load_config(&config_path).unwrap();
+
+    let handle = start_test_daemon(&paths).await;
+
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: Some(vec!["web".to_string()]),
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            assert_eq!(processes[0].name, "web");
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[test]
+fn test_load_config_file_not_found() {
+    let result = config::load_config(std::path::Path::new("/nonexistent/pm3.toml"));
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        config::ConfigError::IoError(_)
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_list_empty_returns_no_processes() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let response = send_raw_request(&paths, &Request::List).await;
+    match &response {
+        Response::ProcessList { processes } => {
+            assert!(processes.is_empty(), "expected empty list");
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_list_process_info_fields() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut config = test_config("sleep 999");
+    config.group = Some("workers".to_string());
+
+    let mut configs = HashMap::new();
+    configs.insert("worker".to_string(), config);
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            let info = &processes[0];
+            assert_eq!(info.name, "worker");
+            assert!(info.pid.is_some(), "PID should be present");
+            assert!(info.pid.unwrap() > 0, "PID should be > 0");
+            assert_eq!(info.status, ProcessStatus::Online);
+            assert!(info.uptime.is_some(), "uptime should be present");
+            assert_eq!(info.restarts, 0);
+            assert_eq!(info.group, Some("workers".to_string()));
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_list_multiple_processes_all_fields() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut alpha_config = test_config("sleep 999");
+    alpha_config.group = Some("group-a".to_string());
+
+    let beta_config = test_config("sleep 999");
+
+    let mut configs = HashMap::new();
+    configs.insert("alpha".to_string(), alpha_config);
+    configs.insert("beta".to_string(), beta_config);
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 2);
+
+            let mut sorted: Vec<_> = processes.iter().collect();
+            sorted.sort_by_key(|p| &p.name);
+
+            let alpha = sorted[0];
+            assert_eq!(alpha.name, "alpha");
+            assert!(alpha.pid.is_some());
+            assert_eq!(alpha.status, ProcessStatus::Online);
+            assert!(alpha.uptime.is_some());
+            assert_eq!(alpha.restarts, 0);
+            assert_eq!(alpha.group, Some("group-a".to_string()));
+
+            let beta = sorted[1];
+            assert_eq!(beta.name, "beta");
+            assert!(beta.pid.is_some());
+            assert_eq!(beta.status, ProcessStatus::Online);
+            assert!(beta.uptime.is_some());
+            assert_eq!(beta.restarts, 0);
+            assert_eq!(beta.group, None);
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_start_nonexistent_name_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let config_path = dir.path().join("pm3.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[web]
+command = "sleep 999"
+"#,
+    )
+    .unwrap();
+
+    let configs = config::load_config(&config_path).unwrap();
+
+    let handle = start_test_daemon(&paths).await;
+
+    let resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: Some(vec!["nonexistent".to_string()]),
+            env: None,
+        },
+    )
+    .await;
+    match &resp {
+        Response::Error { message } => {
+            assert!(
+                message.contains("not found"),
+                "error should mention 'not found', got: {message}"
+            );
+        }
+        other => panic!("expected Error, got: {other:?}"),
+    }
 
     send_raw_request(&paths, &Request::Kill).await;
     let _ = handle.await;

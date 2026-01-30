@@ -302,19 +302,19 @@ Every step must be thoroughly tested before moving to the next. No exceptions.
    - Integration: spawn with `cwd`, verify child's working directory
    - Unit: command string splits into program + args correctly
 
-7. Log capture — pipe child stdout/stderr to log files
+7. ~~Log capture — pipe child stdout/stderr to log files~~ ✅
    - Integration: spawn `echo hello`, verify `<name>-out.log` contains "hello"
    - Integration: spawn a process that writes to stderr, verify `<name>-err.log`
    - Integration: log directory is created if it doesn't exist
 
-8. Start command — client reads pm3.toml, sends to daemon, daemon spawns processes
+8. ~~Start command — client reads pm3.toml, sends to daemon, daemon spawns processes~~ ✅
    - E2E: create pm3.toml with one process, run `pm3 start`, verify process is running
    - E2E: create pm3.toml with two processes, run `pm3 start`, both are running
    - E2E: `pm3 start web` starts only the named process
    - E2E: `pm3 start` with no pm3.toml prints an error
    - E2E: `pm3 start nonexistent` prints an error
 
-9. List command — daemon returns process table, client prints it
+9. ~~List command — daemon returns process table, client prints it~~ ✅
    - E2E: start processes, run `pm3 list`, output contains process names, PIDs, status
    - E2E: no processes running → `pm3 list` shows empty table or message
    - Integration: verify `ProcessInfo` struct has correct fields (name, PID, status, uptime, restarts)

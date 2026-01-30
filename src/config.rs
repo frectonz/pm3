@@ -84,6 +84,14 @@ pub enum ConfigError {
     TomlParse(String),
     #[error("unknown field `{field}` in process `{process}`")]
     UnknownField { process: String, field: String },
+    #[error("{0}")]
+    IoError(String),
+}
+
+pub fn load_config(path: &std::path::Path) -> Result<HashMap<String, ProcessConfig>, ConfigError> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| ConfigError::IoError(format!("{}: {}", path.display(), e)))?;
+    parse_config(&content)
 }
 
 pub fn parse_config(content: &str) -> Result<HashMap<String, ProcessConfig>, ConfigError> {

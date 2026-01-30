@@ -1,6 +1,8 @@
 use crate::config::ProcessConfig;
+use crate::paths::Paths;
 use crate::protocol::{ProcessInfo, ProcessStatus};
 use std::collections::HashMap;
+use std::fs;
 use tokio::process::{Child, Command};
 
 // ---------------------------------------------------------------------------
@@ -77,8 +79,14 @@ pub type ProcessTable = HashMap<String, ManagedProcess>;
 pub fn spawn_process(
     name: String,
     config: ProcessConfig,
+    paths: &Paths,
 ) -> Result<ManagedProcess, ProcessError> {
     let (program, args) = parse_command(&config.command)?;
+
+    fs::create_dir_all(paths.log_dir())?;
+
+    let stdout_file = fs::File::create(paths.stdout_log(&name))?;
+    let stderr_file = fs::File::create(paths.stderr_log(&name))?;
 
     let mut cmd = Command::new(&program);
     cmd.args(&args);
@@ -88,8 +96,8 @@ pub fn spawn_process(
     }
 
     cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::from(stdout_file));
+    cmd.stderr(std::process::Stdio::from(stderr_file));
 
     let child = cmd.spawn().map_err(ProcessError::SpawnFailed)?;
 

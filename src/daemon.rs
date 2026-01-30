@@ -62,10 +62,10 @@ async fn run_accept_loop(
             accept_result = listener.accept() => {
                 let (stream, _addr) = accept_result?;
                 let tx = shutdown_tx.clone();
-                let _paths = paths.clone();
+                let paths = paths.clone();
                 let procs = Arc::clone(processes);
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, &tx, &procs).await {
+                    if let Err(e) = handle_connection(stream, &tx, &procs, &paths).await {
                         eprintln!("connection error: {e}");
                     }
                 });
@@ -100,6 +100,7 @@ async fn handle_connection(
     stream: tokio::net::UnixStream,
     shutdown_tx: &watch::Sender<bool>,
     processes: &Arc<RwLock<ProcessTable>>,
+    paths: &Paths,
 ) -> color_eyre::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut buf_reader = BufReader::new(reader);
@@ -111,7 +112,7 @@ async fn handle_connection(
     }
 
     let request = protocol::decode_request(&line)?;
-    let response = dispatch(request, shutdown_tx, processes).await;
+    let response = dispatch(request, shutdown_tx, processes, paths).await;
     let encoded = protocol::encode_response(&response)?;
     writer.write_all(&encoded).await?;
     writer.shutdown().await?;
@@ -123,11 +124,12 @@ async fn dispatch(
     request: Request,
     shutdown_tx: &watch::Sender<bool>,
     processes: &Arc<RwLock<ProcessTable>>,
+    paths: &Paths,
 ) -> Response {
     match request {
         Request::Start {
             configs, names, ..
-        } => handle_start(configs, names, processes).await,
+        } => handle_start(configs, names, processes, paths).await,
         Request::List => {
             let table = processes.read().await;
             let infos: Vec<_> = table.values().map(|m| m.to_process_info()).collect();
@@ -149,6 +151,7 @@ async fn handle_start(
     configs: HashMap<String, ProcessConfig>,
     names: Option<Vec<String>>,
     processes: &Arc<RwLock<ProcessTable>>,
+    paths: &Paths,
 ) -> Response {
     let to_start: Vec<(String, ProcessConfig)> = match names {
         Some(ref requested) => {
@@ -176,7 +179,7 @@ async fn handle_start(
             continue;
         }
 
-        match process::spawn_process(name.clone(), config) {
+        match process::spawn_process(name.clone(), config, paths) {
             Ok(managed) => {
                 table.insert(name.clone(), managed);
                 started.push(name);

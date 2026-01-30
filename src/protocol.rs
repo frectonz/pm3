@@ -98,6 +98,18 @@ pub enum ProcessStatus {
     Errored,
 }
 
+impl std::fmt::Display for ProcessStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProcessStatus::Starting => write!(f, "starting"),
+            ProcessStatus::Online => write!(f, "online"),
+            ProcessStatus::Unhealthy => write!(f, "unhealthy"),
+            ProcessStatus::Stopped => write!(f, "stopped"),
+            ProcessStatus::Errored => write!(f, "errored"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProcessInfo {
     pub name: String,
@@ -464,6 +476,15 @@ mod tests {
         let resp = Response::Success { message: None };
         let bytes = encode_response(&resp).unwrap();
         assert_eq!(*bytes.last().unwrap(), b'\n');
+    }
+
+    #[test]
+    fn test_process_status_display() {
+        assert_eq!(ProcessStatus::Starting.to_string(), "starting");
+        assert_eq!(ProcessStatus::Online.to_string(), "online");
+        assert_eq!(ProcessStatus::Unhealthy.to_string(), "unhealthy");
+        assert_eq!(ProcessStatus::Stopped.to_string(), "stopped");
+        assert_eq!(ProcessStatus::Errored.to_string(), "errored");
     }
 
     #[test]
