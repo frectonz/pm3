@@ -200,8 +200,14 @@ async fn handle_start(
         }
     }
 
-    Response::Success {
-        message: Some(format!("started: {}", started.join(", "))),
+    if started.is_empty() {
+        Response::Success {
+            message: Some("everything is already running".to_string()),
+        }
+    } else {
+        Response::Success {
+            message: Some(format!("started: {}", started.join(", "))),
+        }
     }
 }
 
