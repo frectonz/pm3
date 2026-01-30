@@ -35,7 +35,11 @@ fn test_config(command: &str) -> ProcessConfig {
     }
 }
 
-fn test_config_with_kill(command: &str, kill_timeout: Option<u64>, kill_signal: Option<&str>) -> ProcessConfig {
+fn test_config_with_kill(
+    command: &str,
+    kill_timeout: Option<u64>,
+    kill_signal: Option<&str>,
+) -> ProcessConfig {
     let mut config = test_config(command);
     config.kill_timeout = kill_timeout;
     config.kill_signal = kill_signal.map(|s| s.to_string());
@@ -805,11 +809,7 @@ async fn test_stop_custom_kill_signal_sigint() {
     let command = format!(
         r#"bash -c "trap '' TERM; trap 'echo yes > {marker_path}; exit 0' INT; while true; do sleep 0.1; done""#
     );
-    let mut config = test_config_with_kill(
-        &command,
-        Some(2000),
-        Some("SIGINT"),
-    );
+    let mut config = test_config_with_kill(&command, Some(2000), Some("SIGINT"));
     config.cwd = Some(workdir.to_str().unwrap().to_string());
 
     let mut configs = HashMap::new();

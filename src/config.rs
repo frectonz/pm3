@@ -224,10 +224,7 @@ DATABASE_URL = "postgres://prod/db"
         assert_eq!(web.post_stop.as_deref(), Some("echo stopped"));
         assert_eq!(web.notify.as_deref(), Some("slack"));
         assert_eq!(web.cron_restart.as_deref(), Some("0 3 * * *"));
-        assert_eq!(
-            web.log_date_format.as_deref(),
-            Some("%Y-%m-%d %H:%M:%S")
-        );
+        assert_eq!(web.log_date_format.as_deref(), Some("%Y-%m-%d %H:%M:%S"));
         assert_eq!(
             web.environments
                 .get("production")

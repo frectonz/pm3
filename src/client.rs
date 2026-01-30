@@ -1,7 +1,7 @@
 use crate::paths::Paths;
 use crate::pid;
 use crate::protocol::{self, Request, Response};
-use color_eyre::eyre::{bail, Context};
+use color_eyre::eyre::{Context, bail};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;

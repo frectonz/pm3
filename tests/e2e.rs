@@ -1,5 +1,5 @@
-use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::path::Path;
 use std::time::Duration;
@@ -37,10 +37,7 @@ command = "sleep 999"
     .unwrap();
 
     // Start all processes
-    pm3(&data_dir, work_dir)
-        .arg("start")
-        .assert()
-        .success();
+    pm3(&data_dir, work_dir).arg("start").assert().success();
 
     // Stop only web
     pm3(&data_dir, work_dir)
@@ -50,10 +47,7 @@ command = "sleep 999"
         .stdout(predicate::str::contains("stopped: web"));
 
     // Verify via list: web is stopped, worker is still online
-    let output = pm3(&data_dir, work_dir)
-        .arg("list")
-        .output()
-        .unwrap();
+    let output = pm3(&data_dir, work_dir).arg("list").output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     let web_line = stdout
@@ -96,10 +90,7 @@ command = "sleep 999"
     .unwrap();
 
     // Start all processes
-    pm3(&data_dir, work_dir)
-        .arg("start")
-        .assert()
-        .success();
+    pm3(&data_dir, work_dir).arg("start").assert().success();
 
     // Stop all (no name argument)
     pm3(&data_dir, work_dir)
@@ -109,10 +100,7 @@ command = "sleep 999"
         .stdout(predicate::str::contains("stopped:"));
 
     // Verify via list: all processes are stopped
-    let output = pm3(&data_dir, work_dir)
-        .arg("list")
-        .output()
-        .unwrap();
+    let output = pm3(&data_dir, work_dir).arg("list").output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Every process line (skip header) should show "stopped"
@@ -151,10 +139,7 @@ command = "sleep 999"
     .unwrap();
 
     // Start a process so the daemon has a process table
-    pm3(&data_dir, work_dir)
-        .arg("start")
-        .assert()
-        .success();
+    pm3(&data_dir, work_dir).arg("start").assert().success();
 
     // Try to stop a nonexistent process
     pm3(&data_dir, work_dir)

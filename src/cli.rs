@@ -52,11 +52,7 @@ pub enum Command {
 
 impl Command {
     pub fn optional_names(names: Vec<String>) -> Option<Vec<String>> {
-        if names.is_empty() {
-            None
-        } else {
-            Some(names)
-        }
+        if names.is_empty() { None } else { Some(names) }
     }
 }
 

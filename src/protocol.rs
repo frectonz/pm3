@@ -444,10 +444,7 @@ mod tests {
     fn test_decode_invalid_json() {
         let result = decode_request("not json at all");
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ProtocolError::Json(_)
-        ));
+        assert!(matches!(result.unwrap_err(), ProtocolError::Json(_)));
     }
 
     #[test]
