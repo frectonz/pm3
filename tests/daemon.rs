@@ -909,7 +909,11 @@ async fn test_restart_preserves_process_config() {
             assert_eq!(info.name, "worker");
             assert_eq!(info.status, ProcessStatus::Online);
             assert!(info.pid.is_some());
-            assert_ne!(info.pid.unwrap(), old_pid, "PID should change after restart");
+            assert_ne!(
+                info.pid.unwrap(),
+                old_pid,
+                "PID should change after restart"
+            );
             assert_eq!(info.restarts, 1);
             assert_eq!(info.group, Some("workers".to_string()));
         }

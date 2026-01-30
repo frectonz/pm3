@@ -335,7 +335,7 @@ Every step must be thoroughly tested before moving to the next. No exceptions.
     - E2E: `pm3 restart` — all processes get new PIDs
     - Integration: restart preserves the process config
 
-13. Kill command — stop all processes, shut down daemon, clean up
+13. ~~Kill command — stop all processes, shut down daemon, clean up~~ ✅
     - E2E: `pm3 kill` — all processes stopped, daemon exits, socket + PID file removed
     - E2E: subsequent `pm3 list` auto-starts a fresh daemon
 
