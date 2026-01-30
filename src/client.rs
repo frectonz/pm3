@@ -23,6 +23,48 @@ pub fn send_request(paths: &Paths, request: &Request) -> color_eyre::Result<Resp
     Ok(response)
 }
 
+/// Send a log request and process streaming responses.
+/// Calls the callback for each response received.
+/// Returns when a non-LogLine response is received or the connection closes.
+pub fn send_log_request<F>(
+    paths: &Paths,
+    request: &Request,
+    mut callback: F,
+) -> color_eyre::Result<Option<Response>>
+where
+    F: FnMut(&Response),
+{
+    ensure_daemon_running(paths)?;
+    let mut stream = connect_with_retry(paths, 10, Duration::from_millis(200))?;
+
+    let encoded = protocol::encode_request(request)?;
+    stream.write_all(&encoded)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+
+    let mut reader = BufReader::new(stream);
+
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line)?;
+        if bytes_read == 0 {
+            // Connection closed
+            return Ok(None);
+        }
+
+        let response = protocol::decode_response(&line)?;
+
+        match &response {
+            Response::LogLine { .. } => {
+                callback(&response);
+            }
+            _ => {
+                // Not a log line - return this as the final response
+                return Ok(Some(response));
+            }
+        }
+    }
+}
+
 fn ensure_daemon_running(paths: &Paths) -> color_eyre::Result<()> {
     if pid::is_daemon_running_sync(paths)? {
         return Ok(());
