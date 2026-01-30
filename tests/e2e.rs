@@ -774,15 +774,13 @@ command = "bash -c 'for i in 1 2 3 4 5 6 7 8 9 10; do echo line$i; done'"
         .unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
 
-    // Should contain the last 3 lines (line8, line9, line10)
-    assert!(stdout.contains("line8"), "should contain line8");
-    assert!(stdout.contains("line9"), "should contain line9");
-    assert!(stdout.contains("line10"), "should contain line10");
-
-    // Should NOT contain earlier lines
-    assert!(!stdout.contains("line1\n"), "should not contain line1");
-    assert!(!stdout.contains("line7\n"), "should not contain line7");
+    // Should contain exactly 3 lines: line8, line9, line10
+    assert_eq!(lines.len(), 3, "should have exactly 3 lines, got: {:?}", lines);
+    assert!(lines[0].contains("line8"), "first line should contain line8");
+    assert!(lines[1].contains("line9"), "second line should contain line9");
+    assert!(lines[2].contains("line10"), "third line should contain line10");
 
     kill_daemon(&data_dir, work_dir);
 }
