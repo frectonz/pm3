@@ -14,15 +14,42 @@ async fn main() -> color_eyre::Result<()> {
         pm3::daemon::run(paths).await?;
     } else if let Some(command) = cli.command {
         let paths = pm3::paths::Paths::new()?;
-        let request = command_to_request(command)?;
-        let response = pm3::client::send_request(&paths, &request)?;
-        if cli.json {
-            print_response_json(&response);
+
+        // Log command needs special handling for streaming responses
+        if let Command::Log { name, lines, follow } = command {
+            let request = Request::Log { name, lines, follow };
+            let json_mode = cli.json;
+
+            let final_response = pm3::client::send_log_request(&paths, &request, |response| {
+                if json_mode {
+                    print_response_json(response);
+                } else {
+                    print_response(response);
+                }
+            })?;
+
+            // Print final response if any (Success or Error)
+            if let Some(response) = final_response {
+                if json_mode {
+                    print_response_json(&response);
+                } else {
+                    // Don't print "ok" for success with no message on log command
+                    if !matches!(&response, Response::Success { message: None }) {
+                        print_response(&response);
+                    }
+                }
+            }
         } else {
-            print_response(&response);
-            if should_auto_list(&request) {
-                let list_resp = pm3::client::send_request(&paths, &Request::List)?;
-                print_response(&list_resp);
+            let request = command_to_request(command)?;
+            let response = pm3::client::send_request(&paths, &request)?;
+            if cli.json {
+                print_response_json(&response);
+            } else {
+                print_response(&response);
+                if should_auto_list(&request) {
+                    let list_resp = pm3::client::send_request(&paths, &Request::List)?;
+                    print_response(&list_resp);
+                }
             }
         }
     } else {

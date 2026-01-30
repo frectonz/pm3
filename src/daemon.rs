@@ -5,9 +5,10 @@ use crate::process::{self, ProcessTable};
 use crate::protocol::{self, Request, Response};
 use color_eyre::eyre::bail;
 use std::collections::HashMap;
+use std::io::SeekFrom;
 use std::sync::Arc;
-use tokio::fs;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::fs::{self, File};
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::RwLock;
 use tokio::sync::watch;
@@ -118,9 +119,16 @@ async fn handle_connection(
     }
 
     let request = protocol::decode_request(&line)?;
-    let response = dispatch(request, shutdown_tx, processes, paths).await;
-    let encoded = protocol::encode_response(&response)?;
-    writer.write_all(&encoded).await?;
+
+    // Log requests with follow need special handling (streaming)
+    if let Request::Log { name, lines, follow } = request {
+        handle_log(name, lines, follow, processes, paths, &mut writer).await?;
+    } else {
+        let response = dispatch(request, shutdown_tx, processes, paths).await;
+        let encoded = protocol::encode_response(&response)?;
+        writer.write_all(&encoded).await?;
+    }
+
     writer.shutdown().await?;
 
     Ok(())
@@ -301,5 +309,281 @@ async fn handle_restart(
 
     Response::Success {
         message: Some(format!("restarted: {}", restarted.join(", "))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Log command
+// ---------------------------------------------------------------------------
+
+async fn send_response<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    response: &Response,
+) -> color_eyre::Result<()> {
+    let encoded = protocol::encode_response(response)?;
+    writer.write_all(&encoded).await?;
+    Ok(())
+}
+
+/// Read the last N lines from a file
+async fn read_last_lines(path: &std::path::Path, n: usize) -> std::io::Result<Vec<String>> {
+    // If file doesn't exist, return empty
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let file = File::open(path).await?;
+    let metadata = file.metadata().await?;
+    let file_size = metadata.len();
+
+    if file_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Read the entire file and get last N lines (simple approach for now)
+    // A more efficient approach would be to seek from the end, but this is simpler
+    let mut reader = BufReader::new(file);
+    let mut all_lines = Vec::new();
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes_read = reader.read_line(&mut line).await?;
+        if bytes_read == 0 {
+            break;
+        }
+        // Remove trailing newline
+        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r').to_string();
+        all_lines.push(trimmed);
+    }
+
+    // Return last N lines
+    let start = if all_lines.len() > n {
+        all_lines.len() - n
+    } else {
+        0
+    };
+    Ok(all_lines[start..].to_vec())
+}
+
+async fn handle_log<W: AsyncWriteExt + Unpin>(
+    name: Option<String>,
+    lines: usize,
+    follow: bool,
+    processes: &Arc<RwLock<ProcessTable>>,
+    paths: &Paths,
+    writer: &mut W,
+) -> color_eyre::Result<()> {
+    // Get list of process names to show logs for
+    let names: Vec<String> = match name {
+        Some(ref n) => {
+            let table = processes.read().await;
+            if !table.contains_key(n) {
+                // Even if process is not running, try to read logs if they exist
+                // This allows viewing logs of stopped processes
+            }
+            vec![n.clone()]
+        }
+        None => {
+            let table = processes.read().await;
+            table.keys().cloned().collect()
+        }
+    };
+
+    if names.is_empty() && name.is_none() {
+        send_response(
+            writer,
+            &Response::Success {
+                message: Some("no processes to show logs for".to_string()),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let show_prefix = name.is_none() || names.len() > 1;
+
+    if follow {
+        // Follow mode: continuously stream new lines
+        handle_log_follow(&names, paths, writer, show_prefix).await?;
+    } else {
+        // Non-follow mode: read last N lines
+        for proc_name in &names {
+            // Read stdout log
+            let stdout_path = paths.stdout_log(proc_name);
+            if let Ok(stdout_lines) = read_last_lines(&stdout_path, lines).await {
+                for line in stdout_lines {
+                    let response = Response::LogLine {
+                        name: if show_prefix {
+                            Some(proc_name.clone())
+                        } else {
+                            None
+                        },
+                        line,
+                    };
+                    send_response(writer, &response).await?;
+                }
+            }
+
+            // Read stderr log
+            let stderr_path = paths.stderr_log(proc_name);
+            if let Ok(stderr_lines) = read_last_lines(&stderr_path, lines).await {
+                for line in stderr_lines {
+                    let response = Response::LogLine {
+                        name: if show_prefix {
+                            Some(format!("{}:err", proc_name))
+                        } else {
+                            None
+                        },
+                        line,
+                    };
+                    send_response(writer, &response).await?;
+                }
+            }
+        }
+
+        // Send a success response to indicate we're done
+        send_response(
+            writer,
+            &Response::Success {
+                message: None,
+            },
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn handle_log_follow<W: AsyncWriteExt + Unpin>(
+    names: &[String],
+    paths: &Paths,
+    writer: &mut W,
+    show_prefix: bool,
+) -> color_eyre::Result<()> {
+    use std::collections::HashMap;
+
+    struct LogTail {
+        name: String,
+        stdout_pos: u64,
+        stderr_pos: u64,
+    }
+
+    // Initialize tails for each process
+    let mut tails: HashMap<String, LogTail> = HashMap::new();
+    for name in names {
+        let stdout_path = paths.stdout_log(name);
+        let stderr_path = paths.stderr_log(name);
+
+        let stdout_pos = if stdout_path.exists() {
+            tokio::fs::metadata(&stdout_path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let stderr_pos = if stderr_path.exists() {
+            tokio::fs::metadata(&stderr_path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        tails.insert(
+            name.clone(),
+            LogTail {
+                name: name.clone(),
+                stdout_pos,
+                stderr_pos,
+            },
+        );
+    }
+
+    // Poll for new lines every 100ms
+    loop {
+        let mut any_output = false;
+
+        for tail in tails.values_mut() {
+            // Check stdout
+            let stdout_path = paths.stdout_log(&tail.name);
+            if stdout_path.exists() {
+                if let Ok(mut file) = File::open(&stdout_path).await {
+                    let metadata = file.metadata().await?;
+                    if metadata.len() > tail.stdout_pos {
+                        file.seek(SeekFrom::Start(tail.stdout_pos)).await?;
+                        let mut reader = BufReader::new(file);
+                        let mut line = String::new();
+
+                        loop {
+                            line.clear();
+                            let bytes_read = reader.read_line(&mut line).await?;
+                            if bytes_read == 0 {
+                                break;
+                            }
+                            tail.stdout_pos += bytes_read as u64;
+                            let trimmed =
+                                line.trim_end_matches('\n').trim_end_matches('\r').to_string();
+
+                            let response = Response::LogLine {
+                                name: if show_prefix {
+                                    Some(tail.name.clone())
+                                } else {
+                                    None
+                                },
+                                line: trimmed,
+                            };
+                            send_response(writer, &response).await?;
+                            any_output = true;
+                        }
+                    }
+                }
+            }
+
+            // Check stderr
+            let stderr_path = paths.stderr_log(&tail.name);
+            if stderr_path.exists() {
+                if let Ok(mut file) = File::open(&stderr_path).await {
+                    let metadata = file.metadata().await?;
+                    if metadata.len() > tail.stderr_pos {
+                        file.seek(SeekFrom::Start(tail.stderr_pos)).await?;
+                        let mut reader = BufReader::new(file);
+                        let mut line = String::new();
+
+                        loop {
+                            line.clear();
+                            let bytes_read = reader.read_line(&mut line).await?;
+                            if bytes_read == 0 {
+                                break;
+                            }
+                            tail.stderr_pos += bytes_read as u64;
+                            let trimmed =
+                                line.trim_end_matches('\n').trim_end_matches('\r').to_string();
+
+                            let response = Response::LogLine {
+                                name: if show_prefix {
+                                    Some(format!("{}:err", tail.name))
+                                } else {
+                                    None
+                                },
+                                line: trimmed,
+                            };
+                            send_response(writer, &response).await?;
+                            any_output = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Flush after each poll cycle if we wrote anything
+        if any_output {
+            writer.flush().await?;
+        }
+
+        // Sleep before next poll
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 }
