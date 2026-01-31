@@ -364,7 +364,7 @@ Every step must be thoroughly tested before moving to the next. No exceptions.
     - Integration: verify only 3 rotated files are kept, oldest is deleted
     - Unit: rotation threshold check logic
 
-18. Restart policy — `restart` field, `stop_exit_codes`
+18. ~~Restart policy — `restart` field, `stop_exit_codes`~~ ✅
     - Unit: parse `"on-failure"`, `"always"`, `"never"` from config
     - Unit: default is `"on-failure"`
     - Unit: `stop_exit_codes` correctly marks exit codes as non-restartable

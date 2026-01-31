@@ -1,4 +1,4 @@
-use pm3::config::{self, ProcessConfig};
+use pm3::config::{self, ProcessConfig, RestartPolicy};
 use pm3::daemon;
 use pm3::log::LOG_ROTATION_SIZE;
 use pm3::paths::Paths;
@@ -1827,6 +1827,211 @@ async fn test_log_rotation_only_keeps_three_files() {
         !paths.rotated_stdout_log("rotator", 4).exists(),
         "rotated stdout log .4 should NOT exist (max keep is 3)"
     );
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+// ── Item 18: Restart policy ─────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_restart_policy_never_does_not_restart() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut config = test_config("sh -c 'exit 1'");
+    config.restart = Some(RestartPolicy::Never);
+
+    let mut configs = HashMap::new();
+    configs.insert("never-restart".to_string(), config);
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            let info = &processes[0];
+            assert_eq!(info.status, ProcessStatus::Errored);
+            assert_eq!(info.restarts, 0);
+            assert!(info.pid.is_none(), "pid should be None after exit");
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_restart_policy_always_restarts_on_clean_exit() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut config = test_config("sh -c 'exit 0'");
+    config.restart = Some(RestartPolicy::Always);
+    config.max_restarts = Some(2);
+
+    let mut configs = HashMap::new();
+    configs.insert("always-restart".to_string(), config);
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            let info = &processes[0];
+            assert_eq!(info.status, ProcessStatus::Stopped);
+            assert_eq!(info.restarts, 2);
+            assert!(info.pid.is_none(), "pid should be None after final exit");
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_restart_policy_on_failure_exit_zero_not_restarted() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut config = test_config("sh -c 'exit 0'");
+    config.restart = Some(RestartPolicy::OnFailure);
+
+    let mut configs = HashMap::new();
+    configs.insert("on-failure-clean".to_string(), config);
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            let info = &processes[0];
+            assert_eq!(info.status, ProcessStatus::Stopped);
+            assert_eq!(info.restarts, 0);
+            assert!(info.pid.is_none(), "pid should be None after exit");
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_restart_policy_on_failure_exit_nonzero_restarts() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut config = test_config("sh -c 'exit 1'");
+    config.restart = Some(RestartPolicy::OnFailure);
+    config.max_restarts = Some(2);
+
+    let mut configs = HashMap::new();
+    configs.insert("on-failure-err".to_string(), config);
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            let info = &processes[0];
+            assert_eq!(info.status, ProcessStatus::Errored);
+            assert_eq!(info.restarts, 2);
+            assert!(info.pid.is_none(), "pid should be None after final exit");
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_restart_policy_stop_exit_codes_prevents_restart() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut config = test_config("sh -c 'exit 42'");
+    config.restart = Some(RestartPolicy::OnFailure);
+    config.stop_exit_codes = Some(vec![42]);
+
+    let mut configs = HashMap::new();
+    configs.insert("stop-code".to_string(), config);
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            let info = &processes[0];
+            assert_eq!(info.status, ProcessStatus::Errored);
+            assert_eq!(info.restarts, 0);
+            assert!(info.pid.is_none(), "pid should be None after exit");
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
 
     send_raw_request(&paths, &Request::Kill).await;
     let _ = handle.await;
