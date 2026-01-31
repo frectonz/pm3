@@ -383,7 +383,7 @@ Every step must be thoroughly tested before moving to the next. No exceptions.
     - Integration: rapid crashes → delays increase between restarts
     - Unit: backoff caps at a maximum delay
 
-21. min_uptime — reset restart counter after stable uptime
+21. ~~min_uptime — reset restart counter after stable uptime~~ ✅
     - Integration: process runs longer than `min_uptime`, crashes → restart count resets to 0
     - Integration: process crashes within `min_uptime` → restart count increments
     - Unit: uptime comparison logic

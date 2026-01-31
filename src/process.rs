@@ -713,4 +713,32 @@ mod tests {
         assert_eq!(compute_backoff(20), Duration::from_millis(BACKOFF_CAP_MS));
         assert_eq!(compute_backoff(30), Duration::from_millis(BACKOFF_CAP_MS));
     }
+
+    // -------------------------------------------------------------------
+    // min_uptime
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_min_uptime_resets_counter_before_policy_check() {
+        let mut config = test_config(Some(RestartPolicy::OnFailure));
+        config.max_restarts = Some(3);
+        config.min_uptime = Some(500);
+
+        // Uptime exceeds min_uptime: counter resets, restart is allowed
+        let mut restarts: u32 = 3;
+        let uptime = Duration::from_millis(600);
+        let min_uptime_ms = config.min_uptime.unwrap_or(DEFAULT_MIN_UPTIME_MS);
+        if uptime >= Duration::from_millis(min_uptime_ms) {
+            restarts = 0;
+        }
+        assert!(evaluate_restart_policy(&config, Some(1), uptime, restarts));
+
+        // Uptime below min_uptime: counter stays at max, restart is blocked
+        let mut restarts: u32 = 3;
+        let uptime = Duration::from_millis(100);
+        if uptime >= Duration::from_millis(min_uptime_ms) {
+            restarts = 0;
+        }
+        assert!(!evaluate_restart_policy(&config, Some(1), uptime, restarts));
+    }
 }

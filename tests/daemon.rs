@@ -2226,3 +2226,108 @@ async fn test_exponential_backoff_increases_delay_between_restarts() {
     send_raw_request(&paths, &Request::Kill).await;
     let _ = handle.await;
 }
+
+// ── Item 21: min_uptime ─────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_min_uptime_stable_run_resets_restart_count() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    // Marker-file counter: first two runs crash instantly, third runs past
+    // min_uptime then crashes, fourth stays up.
+    let counter = dir.path().join("counter");
+    let cmd = format!(
+        concat!(
+            "sh -c '",
+            "C=$(cat {} 2>/dev/null || echo 0); ",
+            "echo $((C + 1)) > {}; ",
+            "if [ $C -lt 2 ]; then exit 1; fi; ",
+            "if [ $C -eq 2 ]; then sleep 0.5; exit 1; fi; ",
+            "sleep 999",
+            "'"
+        ),
+        counter.display(),
+        counter.display()
+    );
+    let mut config = test_config(&cmd);
+    config.restart = Some(RestartPolicy::OnFailure);
+    config.max_restarts = Some(2);
+    config.min_uptime = Some(200);
+
+    let mut configs = HashMap::new();
+    configs.insert("min-uptime-reset".to_string(), config);
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    // Two quick crashes (100+200ms backoff) + one 500ms run + 100ms backoff + spawn
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            let info = &processes[0];
+            assert_eq!(info.status, ProcessStatus::Online);
+            // Without min_uptime reset restarts would hit max (2) and stop.
+            // The reset allows the fourth run to succeed with restarts = 1.
+            assert_eq!(info.restarts, 1);
+            assert!(info.pid.is_some(), "pid should be present");
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_min_uptime_quick_crash_increments_restart_count() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut config = test_config("sh -c 'exit 1'");
+    config.restart = Some(RestartPolicy::OnFailure);
+    config.max_restarts = Some(3);
+    config.min_uptime = Some(5000); // 5s — process never lives this long
+
+    let mut configs = HashMap::new();
+    configs.insert("quick-crash".to_string(), config);
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    match &list_resp {
+        Response::ProcessList { processes } => {
+            assert_eq!(processes.len(), 1);
+            let info = &processes[0];
+            assert_eq!(info.status, ProcessStatus::Errored);
+            assert_eq!(info.restarts, 3);
+            assert!(info.pid.is_none(), "pid should be None after max restarts");
+        }
+        other => panic!("expected ProcessList, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
