@@ -349,7 +349,7 @@ Every step must be thoroughly tested before moving to the next. No exceptions.
     - E2E: `pm3 log` with no name shows interleaved logs from all processes
     - Integration: `--follow` streams new lines as they appear (test with timeout)
 
-15. Flush command — clear log files
+15. ~~Flush command — clear log files~~ ✅
     - E2E: `pm3 flush web` — log files for web are emptied
     - E2E: `pm3 flush` — all log files emptied
     - Integration: verify file exists but is empty after flush

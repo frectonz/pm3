@@ -1335,3 +1335,228 @@ async fn test_log_follow_streams_new_lines() {
     send_raw_request(&paths, &Request::Kill).await;
     let _ = handle.await;
 }
+
+// ── Item 15: Flush command ──────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_flush_empties_log_file() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut configs = HashMap::new();
+    configs.insert(
+        "echoer".to_string(),
+        test_config("sh -c 'echo flush_test_output; echo flush_err >&2'"),
+    );
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify logs have content
+    let stdout_log = paths.stdout_log("echoer");
+    let stderr_log = paths.stderr_log("echoer");
+    assert!(stdout_log.exists(), "stdout log should exist");
+    assert!(stderr_log.exists(), "stderr log should exist");
+    assert!(
+        !std::fs::read_to_string(&stdout_log).unwrap().is_empty(),
+        "stdout log should have content before flush"
+    );
+    assert!(
+        !std::fs::read_to_string(&stderr_log).unwrap().is_empty(),
+        "stderr log should have content before flush"
+    );
+
+    // Flush by name
+    let resp = send_raw_request(
+        &paths,
+        &Request::Flush {
+            names: Some(vec!["echoer".to_string()]),
+        },
+    )
+    .await;
+    assert!(
+        matches!(&resp, Response::Success { .. }),
+        "expected Success, got: {resp:?}"
+    );
+
+    // Verify log files exist but are empty
+    assert!(stdout_log.exists(), "stdout log should still exist");
+    assert!(stderr_log.exists(), "stderr log should still exist");
+    assert!(
+        std::fs::read_to_string(&stdout_log).unwrap().is_empty(),
+        "stdout log should be empty after flush"
+    );
+    assert!(
+        std::fs::read_to_string(&stderr_log).unwrap().is_empty(),
+        "stderr log should be empty after flush"
+    );
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_flush_all_empties_all_logs() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut configs = HashMap::new();
+    configs.insert(
+        "alpha".to_string(),
+        test_config("sh -c 'echo alpha_output'"),
+    );
+    configs.insert("beta".to_string(), test_config("sh -c 'echo beta_output'"));
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify logs have content
+    for name in &["alpha", "beta"] {
+        let stdout_log = paths.stdout_log(name);
+        assert!(stdout_log.exists(), "{name} stdout log should exist");
+        assert!(
+            !std::fs::read_to_string(&stdout_log).unwrap().is_empty(),
+            "{name} stdout log should have content before flush"
+        );
+    }
+
+    // Flush all (no names)
+    let resp = send_raw_request(&paths, &Request::Flush { names: None }).await;
+    assert!(
+        matches!(&resp, Response::Success { .. }),
+        "expected Success, got: {resp:?}"
+    );
+
+    // Verify all log files are empty
+    for name in &["alpha", "beta"] {
+        let stdout_log = paths.stdout_log(name);
+        assert!(stdout_log.exists(), "{name} stdout log should still exist");
+        assert!(
+            std::fs::read_to_string(&stdout_log).unwrap().is_empty(),
+            "{name} stdout log should be empty after flush"
+        );
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_flush_deletes_rotated_files() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    // Start a process so it exists in the process table
+    let mut configs = HashMap::new();
+    configs.insert("worker".to_string(), test_config("sleep 999"));
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Create rotated log files manually
+    std::fs::create_dir_all(paths.log_dir()).unwrap();
+    for i in 1..=3 {
+        let rotated_stdout = paths.rotated_stdout_log("worker", i);
+        let rotated_stderr = paths.rotated_stderr_log("worker", i);
+        std::fs::write(&rotated_stdout, format!("rotated stdout {i}")).unwrap();
+        std::fs::write(&rotated_stderr, format!("rotated stderr {i}")).unwrap();
+    }
+
+    // Verify rotated files exist
+    for i in 1..=3 {
+        assert!(
+            paths.rotated_stdout_log("worker", i).exists(),
+            "rotated stdout.{i} should exist before flush"
+        );
+        assert!(
+            paths.rotated_stderr_log("worker", i).exists(),
+            "rotated stderr.{i} should exist before flush"
+        );
+    }
+
+    // Flush
+    let resp = send_raw_request(
+        &paths,
+        &Request::Flush {
+            names: Some(vec!["worker".to_string()]),
+        },
+    )
+    .await;
+    assert!(
+        matches!(&resp, Response::Success { .. }),
+        "expected Success, got: {resp:?}"
+    );
+
+    // Verify rotated files are deleted
+    for i in 1..=3 {
+        assert!(
+            !paths.rotated_stdout_log("worker", i).exists(),
+            "rotated stdout.{i} should be deleted after flush"
+        );
+        assert!(
+            !paths.rotated_stderr_log("worker", i).exists(),
+            "rotated stderr.{i} should be deleted after flush"
+        );
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_flush_nonexistent_process_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let resp = send_raw_request(
+        &paths,
+        &Request::Flush {
+            names: Some(vec!["nope".to_string()]),
+        },
+    )
+    .await;
+    match &resp {
+        Response::Error { message } => {
+            assert!(
+                message.contains("not found"),
+                "error should mention 'not found', got: {message}"
+            );
+        }
+        other => panic!("expected Error, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}

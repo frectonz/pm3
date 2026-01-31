@@ -810,3 +810,102 @@ command = "sh -c 'echo beta_line'"
 
     kill_daemon(&data_dir, work_dir);
 }
+
+// ── Item 15: Flush command ──────────────────────────────────────────
+
+#[test]
+fn test_e2e_flush_named_process() {
+    let dir = TempDir::new().unwrap();
+    let work_dir = dir.path();
+    let data_dir = dir.path().join("data");
+
+    std::fs::write(
+        work_dir.join("pm3.toml"),
+        r#"
+[web]
+command = "sh -c 'echo web_flush_output'"
+"#,
+    )
+    .unwrap();
+
+    pm3(&data_dir, work_dir).arg("start").assert().success();
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Verify log file has content
+    let stdout_log = data_dir.join("logs").join("web-out.log");
+    assert!(stdout_log.exists(), "stdout log should exist");
+    assert!(
+        !std::fs::read_to_string(&stdout_log).unwrap().is_empty(),
+        "stdout log should have content before flush"
+    );
+
+    // Flush by name
+    pm3(&data_dir, work_dir)
+        .args(["flush", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("flushed"));
+
+    // Verify log file is empty
+    assert!(stdout_log.exists(), "stdout log should still exist");
+    assert!(
+        std::fs::read_to_string(&stdout_log).unwrap().is_empty(),
+        "stdout log should be empty after flush"
+    );
+
+    kill_daemon(&data_dir, work_dir);
+}
+
+#[test]
+fn test_e2e_flush_all() {
+    let dir = TempDir::new().unwrap();
+    let work_dir = dir.path();
+    let data_dir = dir.path().join("data");
+
+    std::fs::write(
+        work_dir.join("pm3.toml"),
+        r#"
+[web]
+command = "sh -c 'echo web_output'"
+
+[worker]
+command = "sh -c 'echo worker_output'"
+"#,
+    )
+    .unwrap();
+
+    pm3(&data_dir, work_dir).arg("start").assert().success();
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Verify log files have content
+    for name in &["web", "worker"] {
+        let stdout_log = data_dir.join("logs").join(format!("{name}-out.log"));
+        assert!(stdout_log.exists(), "{name} stdout log should exist");
+        assert!(
+            !std::fs::read_to_string(&stdout_log).unwrap().is_empty(),
+            "{name} stdout log should have content before flush"
+        );
+    }
+
+    // Flush all (no name argument)
+    pm3(&data_dir, work_dir)
+        .arg("flush")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("flushed"));
+
+    // Verify all log files are empty
+    for name in &["web", "worker"] {
+        let stdout_log = data_dir.join("logs").join(format!("{name}-out.log"));
+        assert!(
+            stdout_log.exists(),
+            "{name} stdout log should still exist after flush"
+        );
+        assert!(
+            std::fs::read_to_string(&stdout_log).unwrap().is_empty(),
+            "{name} stdout log should be empty after flush"
+        );
+    }
+
+    kill_daemon(&data_dir, work_dir);
+}
