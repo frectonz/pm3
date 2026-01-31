@@ -75,6 +75,32 @@ fn send_raw_request_sync(paths: &Paths, request: &Request) -> Response {
     protocol::decode_response(&line).unwrap()
 }
 
+fn send_streaming_request_sync(paths: &Paths, request: &Request) -> Vec<Response> {
+    let mut stream = UnixStream::connect(paths.socket_file()).unwrap();
+    let encoded = protocol::encode_request(request).unwrap();
+    stream.write_all(&encoded).unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+
+    let reader = BufReader::new(stream);
+    let mut responses = Vec::new();
+    for line_result in reader.lines() {
+        let line = line_result.unwrap();
+        if line.is_empty() {
+            continue;
+        }
+        responses.push(protocol::decode_response(&line).unwrap());
+    }
+    responses
+}
+
+async fn send_streaming_request(paths: &Paths, request: &Request) -> Vec<Response> {
+    let p = paths.clone();
+    let req = request.clone();
+    tokio::task::spawn_blocking(move || send_streaming_request_sync(&p, &req))
+        .await
+        .unwrap()
+}
+
 async fn send_raw_request(paths: &Paths, request: &Request) -> Response {
     let p = paths.clone();
     let req = request.clone();
@@ -961,6 +987,350 @@ command = "sleep 999"
         }
         other => panic!("expected Error, got: {other:?}"),
     }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+// ── Item 14: Log command ────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_shows_stdout_lines() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut configs = HashMap::new();
+    configs.insert(
+        "echoer".to_string(),
+        test_config("sh -c 'echo line1; echo line2; echo line3'"),
+    );
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    // Wait for process to finish and logs to be written
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let responses = send_streaming_request(
+        &paths,
+        &Request::Log {
+            name: Some("echoer".to_string()),
+            lines: 15,
+            follow: false,
+        },
+    )
+    .await;
+
+    let log_lines: Vec<&str> = responses
+        .iter()
+        .filter_map(|r| match r {
+            Response::LogLine { line, .. } => Some(line.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        log_lines.iter().any(|l| l.contains("line1")),
+        "should contain line1, got: {log_lines:?}"
+    );
+    assert!(
+        log_lines.iter().any(|l| l.contains("line2")),
+        "should contain line2, got: {log_lines:?}"
+    );
+    assert!(
+        log_lines.iter().any(|l| l.contains("line3")),
+        "should contain line3, got: {log_lines:?}"
+    );
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_lines_param_limits_output() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut configs = HashMap::new();
+    configs.insert(
+        "counter".to_string(),
+        test_config("sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do echo line$i; done'"),
+    );
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let responses = send_streaming_request(
+        &paths,
+        &Request::Log {
+            name: Some("counter".to_string()),
+            lines: 5,
+            follow: false,
+        },
+    )
+    .await;
+
+    let log_lines: Vec<&str> = responses
+        .iter()
+        .filter_map(|r| match r {
+            Response::LogLine { line, .. } => Some(line.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        log_lines.len(),
+        5,
+        "should show exactly 5 lines, got: {log_lines:?}"
+    );
+    // Should be the last 5 lines (line6..line10)
+    assert!(
+        log_lines.iter().any(|l| l.contains("line10")),
+        "should contain line10, got: {log_lines:?}"
+    );
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_no_name_interleaves_all_processes() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut configs = HashMap::new();
+    configs.insert(
+        "alpha".to_string(),
+        test_config("sh -c 'echo alpha_output'"),
+    );
+    configs.insert("beta".to_string(), test_config("sh -c 'echo beta_output'"));
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let responses = send_streaming_request(
+        &paths,
+        &Request::Log {
+            name: None,
+            lines: 15,
+            follow: false,
+        },
+    )
+    .await;
+
+    let log_lines: Vec<(&Option<String>, &str)> = responses
+        .iter()
+        .filter_map(|r| match r {
+            Response::LogLine { name, line } => Some((name, line.as_str())),
+            _ => None,
+        })
+        .collect();
+
+    // Should have lines from both processes
+    let has_alpha = log_lines.iter().any(|(_, l)| l.contains("alpha_output"));
+    let has_beta = log_lines.iter().any(|(_, l)| l.contains("beta_output"));
+    assert!(has_alpha, "should have alpha output, got: {log_lines:?}");
+    assert!(has_beta, "should have beta output, got: {log_lines:?}");
+
+    // All lines should have process name prefix when multiple processes
+    for (name, _) in &log_lines {
+        assert!(
+            name.is_some(),
+            "all lines should have process name when showing multiple processes"
+        );
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_single_process_no_name_prefix() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut configs = HashMap::new();
+    configs.insert("solo".to_string(), test_config("sh -c 'echo solo_output'"));
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let responses = send_streaming_request(
+        &paths,
+        &Request::Log {
+            name: Some("solo".to_string()),
+            lines: 15,
+            follow: false,
+        },
+    )
+    .await;
+
+    let log_lines: Vec<(&Option<String>, &str)> = responses
+        .iter()
+        .filter_map(|r| match r {
+            Response::LogLine { name, line } => Some((name, line.as_str())),
+            _ => None,
+        })
+        .collect();
+
+    // Single process: no name prefix
+    for (name, _) in &log_lines {
+        assert!(name.is_none(), "single process should NOT have name prefix");
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_nonexistent_process_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let responses = send_streaming_request(
+        &paths,
+        &Request::Log {
+            name: Some("nope".to_string()),
+            lines: 15,
+            follow: false,
+        },
+    )
+    .await;
+
+    assert_eq!(responses.len(), 1, "should get one error response");
+    match &responses[0] {
+        Response::Error { message } => {
+            assert!(
+                message.contains("not found"),
+                "error should mention 'not found', got: {message}"
+            );
+        }
+        other => panic!("expected Error, got: {other:?}"),
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_follow_streams_new_lines() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    // Start a process that writes lines slowly
+    let mut configs = HashMap::new();
+    configs.insert(
+        "slow".to_string(),
+        test_config("sh -c 'echo initial; sleep 0.3; echo follow1; sleep 0.3; echo follow2'"),
+    );
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    // Wait for the initial line to be written
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Start a follow request in a background task with a timeout
+    let paths_clone = paths.clone();
+    let follow_handle = tokio::task::spawn_blocking(move || {
+        let mut stream = UnixStream::connect(paths_clone.socket_file()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+
+        let request = Request::Log {
+            name: Some("slow".to_string()),
+            lines: 15,
+            follow: true,
+        };
+        let encoded = protocol::encode_request(&request).unwrap();
+        stream.write_all(&encoded).unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let reader = BufReader::new(stream);
+        let mut responses = Vec::new();
+        for line_result in reader.lines() {
+            match line_result {
+                Ok(line) if !line.is_empty() => {
+                    responses.push(protocol::decode_response(&line).unwrap());
+                }
+                _ => break, // timeout or EOF
+            }
+        }
+        responses
+    });
+
+    let responses = follow_handle.await.unwrap();
+
+    let log_lines: Vec<&str> = responses
+        .iter()
+        .filter_map(|r| match r {
+            Response::LogLine { line, .. } => Some(line.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // Should have received the initial line and then the follow lines
+    assert!(
+        log_lines.iter().any(|l| l.contains("initial")),
+        "should contain 'initial', got: {log_lines:?}"
+    );
+    assert!(
+        log_lines.iter().any(|l| l.contains("follow1")),
+        "should contain 'follow1', got: {log_lines:?}"
+    );
+    assert!(
+        log_lines.iter().any(|l| l.contains("follow2")),
+        "should contain 'follow2', got: {log_lines:?}"
+    );
 
     send_raw_request(&paths, &Request::Kill).await;
     let _ = handle.await;

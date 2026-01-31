@@ -711,3 +711,102 @@ command = "sleep 999"
 
     kill_daemon(&data_dir, work_dir);
 }
+
+// ── Item 14: Log command ────────────────────────────────────────────
+
+#[test]
+fn test_e2e_log_shows_output() {
+    let dir = TempDir::new().unwrap();
+    let work_dir = dir.path();
+    let data_dir = dir.path().join("data");
+
+    std::fs::write(
+        work_dir.join("pm3.toml"),
+        r#"
+[echoer]
+command = "sh -c 'echo hello_from_echoer'"
+"#,
+    )
+    .unwrap();
+
+    pm3(&data_dir, work_dir).arg("start").assert().success();
+    std::thread::sleep(Duration::from_millis(500));
+
+    pm3(&data_dir, work_dir)
+        .args(["log", "echoer"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello_from_echoer"));
+
+    kill_daemon(&data_dir, work_dir);
+}
+
+#[test]
+fn test_e2e_log_lines_param() {
+    let dir = TempDir::new().unwrap();
+    let work_dir = dir.path();
+    let data_dir = dir.path().join("data");
+
+    std::fs::write(
+        work_dir.join("pm3.toml"),
+        r#"
+[counter]
+command = "sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do echo line$i; done'"
+"#,
+    )
+    .unwrap();
+
+    pm3(&data_dir, work_dir).arg("start").assert().success();
+    std::thread::sleep(Duration::from_millis(500));
+
+    let output = pm3(&data_dir, work_dir)
+        .args(["log", "counter", "--lines", "5"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+
+    assert_eq!(
+        lines.len(),
+        5,
+        "should show exactly 5 lines, got: {lines:?}"
+    );
+
+    kill_daemon(&data_dir, work_dir);
+}
+
+#[test]
+fn test_e2e_log_no_name_shows_interleaved() {
+    let dir = TempDir::new().unwrap();
+    let work_dir = dir.path();
+    let data_dir = dir.path().join("data");
+
+    std::fs::write(
+        work_dir.join("pm3.toml"),
+        r#"
+[alpha]
+command = "sh -c 'echo alpha_line'"
+
+[beta]
+command = "sh -c 'echo beta_line'"
+"#,
+    )
+    .unwrap();
+
+    pm3(&data_dir, work_dir).arg("start").assert().success();
+    std::thread::sleep(Duration::from_millis(500));
+
+    let output = pm3(&data_dir, work_dir).arg("log").output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("alpha_line"),
+        "should contain alpha_line, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("beta_line"),
+        "should contain beta_line, got: {stdout}"
+    );
+
+    kill_daemon(&data_dir, work_dir);
+}
