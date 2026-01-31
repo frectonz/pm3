@@ -401,6 +401,92 @@ mod tests {
         }
     }
 
+    // ── Item 17: Log rotation threshold tests ─────────────────────────
+
+    /// Helper: pipe `data` through `run_log_copier`, return `(TempDir, PathBuf)`
+    /// so callers can inspect rotated sibling files.
+    async fn run_copier_to_dir(data: Vec<u8>) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        let (tx, _rx) = broadcast::channel(16);
+        let reader = tokio::io::BufReader::new(std::io::Cursor::new(data));
+        run_log_copier(
+            "test".into(),
+            LogStream::Stdout,
+            reader,
+            log_path.clone(),
+            None,
+            tx,
+        )
+        .await
+        .unwrap();
+        (dir, log_path)
+    }
+
+    #[tokio::test]
+    async fn test_rotation_triggered_at_threshold() {
+        // 12,000 lines × 1000 bytes = 12MB (> 10MB threshold)
+        let line = "A".repeat(999) + "\n";
+        let data: Vec<u8> = line.repeat(12_000).into_bytes();
+        let (_dir, log_path) = run_copier_to_dir(data).await;
+
+        // .1 should exist after rotation
+        assert!(
+            rotated_path(&log_path, 1).exists(),
+            "rotated file .1 should exist after exceeding threshold"
+        );
+
+        // Current file should be smaller than the rotation threshold
+        let current_size = std::fs::metadata(&log_path).unwrap().len();
+        assert!(
+            current_size < LOG_ROTATION_SIZE,
+            "current file size ({current_size}) should be < LOG_ROTATION_SIZE ({LOG_ROTATION_SIZE})"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rotation_keeps_only_three_rotated_files() {
+        // 45,000 lines × 1000 bytes = 45MB (triggers 4 rotations)
+        let line = "A".repeat(999) + "\n";
+        let data: Vec<u8> = line.repeat(45_000).into_bytes();
+        let (_dir, log_path) = run_copier_to_dir(data).await;
+
+        // .1, .2, .3 should exist
+        for i in 1..=3 {
+            assert!(
+                rotated_path(&log_path, i).exists(),
+                "rotated file .{i} should exist"
+            );
+        }
+
+        // .4 should NOT exist
+        assert!(
+            !rotated_path(&log_path, 4).exists(),
+            "rotated file .4 should NOT exist (max keep is 3)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_rotation_below_threshold() {
+        // 5,000 lines × 1000 bytes = 5MB (< 10MB threshold)
+        let line = "A".repeat(999) + "\n";
+        let data: Vec<u8> = line.repeat(5_000).into_bytes();
+        let (_dir, log_path) = run_copier_to_dir(data).await;
+
+        // No rotation should have occurred
+        assert!(
+            !rotated_path(&log_path, 1).exists(),
+            "rotated file .1 should NOT exist when below threshold"
+        );
+
+        // Current file should contain all data
+        let current_size = std::fs::metadata(&log_path).unwrap().len();
+        assert_eq!(
+            current_size, 5_000_000,
+            "current file size should be exactly 5,000,000 bytes"
+        );
+    }
+
     #[tokio::test]
     async fn test_no_timestamp_when_format_is_none() {
         let content = run_copier_with_format(None, &["raw line one", "raw line two"]).await;

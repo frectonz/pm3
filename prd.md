@@ -359,7 +359,7 @@ Every step must be thoroughly tested before moving to the next. No exceptions.
     - Unit: timestamp formatting with various format strings
     - Integration: no `log_date_format` → no timestamp prefix
 
-17. Log rotation — rotate at 10MB, keep 3 old files
+17. ~~Log rotation — rotate at 10MB, keep 3 old files~~ ✅
     - Integration: write >10MB to a log, verify rotation creates `<name>-out.log.1`
     - Integration: verify only 3 rotated files are kept, oldest is deleted
     - Unit: rotation threshold check logic

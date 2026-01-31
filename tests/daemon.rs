@@ -1,5 +1,6 @@
 use pm3::config::{self, ProcessConfig};
 use pm3::daemon;
+use pm3::log::LOG_ROTATION_SIZE;
 use pm3::paths::Paths;
 use pm3::protocol::{self, ProcessStatus, Request, Response};
 use regex::Regex;
@@ -1705,6 +1706,127 @@ async fn test_log_timestamp_stderr() {
     }
     assert!(content.contains("err1"), "content should contain 'err1'");
     assert!(content.contains("err2"), "content should contain 'err2'");
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+// ── Item 17: Log rotation ───────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_rotation_creates_rotated_file() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    // Generate 12,000 lines × 1000 bytes = 12MB (> 10MB threshold)
+    let mut configs = HashMap::new();
+    configs.insert(
+        "biglog".to_string(),
+        test_config("sh -c 'yes \"$(printf \"%0999d\" 0)\" | head -n 12000'"),
+    );
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    // Wait for the log copier to flush
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let rotated = paths.rotated_stdout_log("biglog", 1);
+    assert!(
+        rotated.exists(),
+        "rotated stdout log .1 should exist after writing >10MB"
+    );
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_rotation_only_keeps_three_files() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    // 1. Start "rotator" with a quick command that exits immediately
+    let mut configs = HashMap::new();
+    configs.insert(
+        "rotator".to_string(),
+        test_config("sh -c 'echo setup_done'"),
+    );
+    send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+
+    // 2. Wait for log copier to finish
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // 3. Stop "rotator" (may already be stopped)
+    let _ = send_raw_request(
+        &paths,
+        &Request::Stop {
+            names: Some(vec!["rotator".to_string()]),
+        },
+    )
+    .await;
+
+    // 4. Wait for stop to settle
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // 5. Seed: overwrite stdout log with exactly LOG_ROTATION_SIZE bytes of padding
+    let stdout_log = paths.stdout_log("rotator");
+    std::fs::write(&stdout_log, vec![b'X'; LOG_ROTATION_SIZE as usize]).unwrap();
+
+    // 6. Seed: create .1, .2, .3 manually
+    for i in 1..=3 {
+        std::fs::write(
+            paths.rotated_stdout_log("rotator", i),
+            format!("old-rotated-{i}"),
+        )
+        .unwrap();
+    }
+
+    // 7. Restart "rotator" — log copier opens file, sees 10MB, first line triggers rotation
+    let restart_resp = send_raw_request(
+        &paths,
+        &Request::Restart {
+            names: Some(vec!["rotator".to_string()]),
+        },
+    )
+    .await;
+    assert!(
+        matches!(&restart_resp, Response::Success { .. }),
+        "expected Success, got: {restart_resp:?}"
+    );
+
+    // 8. Wait for rotation to happen
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // 9. Verify .1, .2, .3 exist; .4 does NOT
+    for i in 1..=3 {
+        assert!(
+            paths.rotated_stdout_log("rotator", i).exists(),
+            "rotated stdout log .{i} should exist"
+        );
+    }
+    assert!(
+        !paths.rotated_stdout_log("rotator", 4).exists(),
+        "rotated stdout log .4 should NOT exist (max keep is 3)"
+    );
 
     send_raw_request(&paths, &Request::Kill).await;
     let _ = handle.await;
