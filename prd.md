@@ -354,7 +354,7 @@ Every step must be thoroughly tested before moving to the next. No exceptions.
     - E2E: `pm3 flush` — all log files emptied
     - Integration: verify file exists but is empty after flush
 
-16. Log timestamps — `log_date_format` prefix
+16. ~~Log timestamps — `log_date_format` prefix~~ ✅
     - Integration: set `log_date_format`, spawn process, verify log lines start with timestamp
     - Unit: timestamp formatting with various format strings
     - Integration: no `log_date_format` → no timestamp prefix

@@ -318,4 +318,103 @@ mod tests {
     fn test_rotation_keep_constant() {
         assert_eq!(LOG_ROTATION_KEEP, 3);
     }
+
+    // ── Item 16: Log timestamp tests ────────────────────────────────
+
+    /// Helper: pipe `lines` through `run_log_copier` with the given format,
+    /// return the resulting log file contents.
+    async fn run_copier_with_format(fmt: Option<&str>, lines: &[&str]) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        let (tx, _rx) = broadcast::channel(16);
+
+        // Build input bytes
+        let mut input = String::new();
+        for line in lines {
+            input.push_str(line);
+            input.push('\n');
+        }
+
+        let reader = tokio::io::BufReader::new(std::io::Cursor::new(input.into_bytes()));
+
+        run_log_copier(
+            "test".to_string(),
+            LogStream::Stdout,
+            reader,
+            log_path.clone(),
+            fmt.map(|s| s.to_string()),
+            tx,
+        )
+        .await
+        .unwrap();
+
+        tokio::fs::read_to_string(&log_path).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_timestamp_format_ymd_hms() {
+        let content =
+            run_copier_with_format(Some("%Y-%m-%d %H:%M:%S"), &["hello world", "second line"])
+                .await;
+
+        let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \| .+$").unwrap();
+        for line in content.lines() {
+            assert!(re.is_match(line), "line did not match pattern: {line}");
+        }
+        assert!(
+            content.contains("hello world"),
+            "content should be preserved"
+        );
+        assert!(
+            content.contains("second line"),
+            "content should be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_timestamp_format_hm_only() {
+        let content = run_copier_with_format(Some("%H:%M"), &["test line"]).await;
+
+        let re = regex::Regex::new(r"^\d{2}:\d{2} \| .+$").unwrap();
+        for line in content.lines() {
+            assert!(re.is_match(line), "line did not match pattern: {line}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_timestamp_format_epoch() {
+        let content = run_copier_with_format(Some("%s"), &["epoch line"]).await;
+
+        let re = regex::Regex::new(r"^\d+ \| .+$").unwrap();
+        for line in content.lines() {
+            assert!(re.is_match(line), "line did not match pattern: {line}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_timestamp_format_date_only() {
+        let content = run_copier_with_format(Some("%Y-%m-%d"), &["date only"]).await;
+
+        let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2} \| .+$").unwrap();
+        for line in content.lines() {
+            assert!(re.is_match(line), "line did not match pattern: {line}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_timestamp_when_format_is_none() {
+        let content = run_copier_with_format(None, &["raw line one", "raw line two"]).await;
+
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "raw line one");
+        assert_eq!(lines[1], "raw line two");
+        // Verify no separator is present
+        for line in &lines {
+            assert!(
+                !line.contains(" | "),
+                "line should not contain ' | ': {line}"
+            );
+        }
+    }
 }

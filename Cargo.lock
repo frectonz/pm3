@@ -661,6 +661,7 @@ dependencies = [
  "nix",
  "owo-colors",
  "predicates",
+ "regex",
  "serde",
  "serde_json",
  "shell-words",

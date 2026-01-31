@@ -2,6 +2,7 @@ use pm3::config::{self, ProcessConfig};
 use pm3::daemon;
 use pm3::paths::Paths;
 use pm3::protocol::{self, ProcessStatus, Request, Response};
+use regex::Regex;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -1556,6 +1557,154 @@ async fn test_flush_nonexistent_process_returns_error() {
         }
         other => panic!("expected Error, got: {other:?}"),
     }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+// ── Item 16: Log timestamp tests ────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_timestamp_prefix() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut config = test_config("sh -c 'echo line1; echo line2; echo line3'");
+    config.log_date_format = Some("%Y-%m-%d %H:%M:%S".to_string());
+
+    let mut configs = HashMap::new();
+    configs.insert("ts-echo".to_string(), config);
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let stdout_log = paths.stdout_log("ts-echo");
+    assert!(stdout_log.exists(), "stdout log file should exist");
+
+    let content = std::fs::read_to_string(&stdout_log).unwrap();
+    let re = Regex::new(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \| .+$").unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 3, "should have 3 lines, got: {lines:?}");
+    for line in &lines {
+        assert!(
+            re.is_match(line),
+            "line did not match timestamp pattern: {line}"
+        );
+    }
+    // Verify original content is preserved after the separator
+    assert!(content.contains("line1"), "content should contain 'line1'");
+    assert!(content.contains("line2"), "content should contain 'line2'");
+    assert!(content.contains("line3"), "content should contain 'line3'");
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_no_timestamp_without_format() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    // Default test_config has log_date_format = None
+    let mut configs = HashMap::new();
+    configs.insert(
+        "no-ts".to_string(),
+        test_config("sh -c 'echo plain1; echo plain2'"),
+    );
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let stdout_log = paths.stdout_log("no-ts");
+    assert!(stdout_log.exists(), "stdout log file should exist");
+
+    let content = std::fs::read_to_string(&stdout_log).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 2, "should have 2 lines, got: {lines:?}");
+    assert_eq!(lines[0], "plain1");
+    assert_eq!(lines[1], "plain2");
+    for line in &lines {
+        assert!(
+            !line.contains(" | "),
+            "line should not contain ' | ' separator: {line}"
+        );
+    }
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_log_timestamp_stderr() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+
+    let handle = start_test_daemon(&paths).await;
+
+    let mut config = test_config("sh -c 'echo err1 >&2; echo err2 >&2'");
+    config.log_date_format = Some("%Y-%m-%d %H:%M:%S".to_string());
+
+    let mut configs = HashMap::new();
+    configs.insert("ts-err".to_string(), config);
+    let start_resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(&start_resp, Response::Success { .. }),
+        "expected Success, got: {start_resp:?}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let stderr_log = paths.stderr_log("ts-err");
+    assert!(stderr_log.exists(), "stderr log file should exist");
+
+    let content = std::fs::read_to_string(&stderr_log).unwrap();
+    let re = Regex::new(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \| .+$").unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 2, "should have 2 lines, got: {lines:?}");
+    for line in &lines {
+        assert!(
+            re.is_match(line),
+            "stderr line did not match timestamp pattern: {line}"
+        );
+    }
+    assert!(content.contains("err1"), "content should contain 'err1'");
+    assert!(content.contains("err2"), "content should contain 'err2'");
 
     send_raw_request(&paths, &Request::Kill).await;
     let _ = handle.await;
