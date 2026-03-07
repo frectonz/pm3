@@ -276,6 +276,7 @@ mod tests {
             stop_exit_codes: None,
             watch: None,
             watch_ignore: None,
+            watch_debounce: None,
             depends_on: deps.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
             restart: None,
             group: None,

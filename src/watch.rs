@@ -2,12 +2,20 @@ use crate::config::{ProcessConfig, Watch};
 use crate::paths::Paths;
 use crate::process::{self, ProcessTable};
 use crate::protocol::ProcessStatus;
+use notify::event::EventKind;
 use notify::{RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{RwLock, watch};
-pub const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
+pub const DEFAULT_DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
+
+pub fn debounce_duration(config: &ProcessConfig) -> Duration {
+    config
+        .watch_debounce
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_DEBOUNCE_DURATION)
+}
 pub fn resolve_watch_path(config: &ProcessConfig) -> Option<PathBuf> {
     match config.watch.as_ref()? {
         Watch::Enabled(false) => None,
@@ -43,6 +51,14 @@ fn should_ignore(path: &std::path::Path, ignore_patterns: &[String]) -> bool {
     }
     false
 }
+
+fn should_restart_for_event_kind(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) | EventKind::Any
+    )
+}
+
 pub fn spawn_watcher(
     name: String,
     config: ProcessConfig,
@@ -54,6 +70,7 @@ pub fn spawn_watcher(
         return;
     };
 
+    let watch_debounce_duration = debounce_duration(&config);
     let ignore_patterns: Vec<String> = config.watch_ignore.clone().unwrap_or_default();
 
     tokio::spawn(async move {
@@ -102,14 +119,15 @@ pub fn spawn_watcher(
             // Skip directory paths — on macOS, FSEvents fires events for parent
             // directories when child files change, and those parent paths may not
             // contain the ignored component.
-            let mut has_relevant = first_event
-                .paths
-                .iter()
-                .any(|p| !p.is_dir() && !should_ignore(p, &ignore_patterns));
+            let mut has_relevant = first_event.paths.iter().any(|p| {
+                should_restart_for_event_kind(&first_event.kind)
+                    && !p.is_dir()
+                    && !should_ignore(p, &ignore_patterns)
+            });
 
-            // Debounce: wait DEBOUNCE_DURATION, drain any further events
+            // Debounce: wait configured duration, drain any further events
             tokio::select! {
-                _ = tokio::time::sleep(DEBOUNCE_DURATION) => {}
+                _ = tokio::time::sleep(watch_debounce_duration) => {}
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
                         return;
@@ -121,7 +139,10 @@ pub fn spawn_watcher(
             while let Ok(event) = rx.try_recv() {
                 if !has_relevant {
                     for path in &event.paths {
-                        if !path.is_dir() && !should_ignore(path, &ignore_patterns) {
+                        if should_restart_for_event_kind(&event.kind)
+                            && !path.is_dir()
+                            && !should_ignore(path, &ignore_patterns)
+                        {
                             has_relevant = true;
                             break;
                         }
@@ -225,6 +246,7 @@ mod tests {
             stop_exit_codes: None,
             watch: None,
             watch_ignore: None,
+            watch_debounce: None,
             depends_on: None,
             restart: None,
             group: None,
@@ -332,5 +354,33 @@ mod tests {
                 "logs".to_string()
             ]
         ));
+    }
+
+    #[test]
+    fn test_debounce_duration_default_and_custom() {
+        let mut config = base_config();
+        assert_eq!(debounce_duration(&config), DEFAULT_DEBOUNCE_DURATION);
+
+        config.watch_debounce = Some(1200);
+        assert_eq!(debounce_duration(&config), Duration::from_millis(1200));
+    }
+
+    #[test]
+    fn test_should_restart_for_event_kind() {
+        use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
+
+        assert!(should_restart_for_event_kind(&EventKind::Create(
+            CreateKind::Any
+        )));
+        assert!(should_restart_for_event_kind(&EventKind::Modify(
+            ModifyKind::Any
+        )));
+        assert!(should_restart_for_event_kind(&EventKind::Remove(
+            RemoveKind::Any
+        )));
+        assert!(should_restart_for_event_kind(&EventKind::Any));
+        assert!(!should_restart_for_event_kind(&EventKind::Access(
+            AccessKind::Any
+        )));
     }
 }

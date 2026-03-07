@@ -49,6 +49,7 @@ pub struct ProcessConfig {
     pub stop_exit_codes: Option<Vec<i32>>,
     pub watch: Option<Watch>,
     pub watch_ignore: Option<Vec<String>>,
+    pub watch_debounce: Option<u64>,
     pub depends_on: Option<Vec<String>>,
     pub restart: Option<RestartPolicy>,
     pub group: Option<String>,
@@ -115,6 +116,7 @@ struct RawProcessConfig {
     stop_exit_codes: Option<Vec<i32>>,
     watch: Option<Watch>,
     watch_ignore: Option<Vec<String>>,
+    watch_debounce: Option<u64>,
     depends_on: Option<Vec<String>>,
     restart: Option<RestartPolicy>,
     group: Option<String>,
@@ -199,6 +201,7 @@ pub fn parse_config(content: &str) -> Result<HashMap<String, ProcessConfig>, Con
                 stop_exit_codes: raw.stop_exit_codes,
                 watch: raw.watch,
                 watch_ignore: raw.watch_ignore,
+                watch_debounce: raw.watch_debounce,
                 depends_on: raw.depends_on,
                 restart: raw.restart,
                 group: raw.group,
@@ -238,6 +241,7 @@ min_uptime = 1000
 stop_exit_codes = [0, 143]
 watch = true
 watch_ignore = ["node_modules", ".git"]
+watch_debounce = 750
 depends_on = ["db"]
 restart = "on_failure"
 group = "backend"
@@ -275,6 +279,7 @@ DATABASE_URL = "postgres://prod/db"
             web.watch_ignore,
             Some(vec!["node_modules".to_string(), ".git".to_string()])
         );
+        assert_eq!(web.watch_debounce, Some(750));
         assert_eq!(web.depends_on, Some(vec!["db".to_string()]));
         assert_eq!(web.restart, Some(RestartPolicy::OnFailure));
         assert_eq!(web.group.as_deref(), Some("backend"));
@@ -492,6 +497,7 @@ DATABASE_URL = "postgres://staging/db"
             stop_exit_codes: None,
             watch: None,
             watch_ignore: None,
+            watch_debounce: None,
             depends_on: None,
             restart: None,
             group: None,

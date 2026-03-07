@@ -1423,6 +1423,7 @@ mod tests {
             stop_exit_codes: None,
             watch: None,
             watch_ignore: None,
+            watch_debounce: None,
             depends_on: None,
             restart: None,
             group: None,

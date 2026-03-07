@@ -25,6 +25,7 @@ fn test_config(command: &str) -> ProcessConfig {
         stop_exit_codes: None,
         watch: None,
         watch_ignore: None,
+        watch_debounce: None,
         depends_on: None,
         restart: None,
         group: None,
@@ -4157,6 +4158,76 @@ async fn test_watch_debounce_rapid_changes_trigger_one_restart() {
         final_restarts, 1,
         "rapid file changes should debounce into a single restart, got {} restarts",
         final_restarts
+    );
+
+    send_raw_request(&paths, &Request::Kill).await;
+    let _ = handle.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_watch_debounce_respects_custom_duration() {
+    let dir = TempDir::new().unwrap();
+    let paths = Paths::with_base(dir.path().to_path_buf());
+    let handle = start_test_daemon(&paths).await;
+
+    let watch_dir = dir.path().join("custom_debounce_src");
+    std::fs::create_dir_all(&watch_dir).unwrap();
+    std::fs::write(watch_dir.join("file.txt"), "v0").unwrap();
+
+    let mut config = test_config("sleep 999");
+    config.watch = Some(Watch::Path(watch_dir.to_string_lossy().to_string()));
+    config.watch_debounce = Some(1500);
+    config.restart = Some(RestartPolicy::Never);
+
+    let mut configs = HashMap::new();
+    configs.insert("custom-debounce".to_string(), config);
+
+    let resp = send_raw_request(
+        &paths,
+        &Request::Start {
+            configs,
+            names: None,
+            env: None,
+            wait: false,
+            path: None,
+        },
+    )
+    .await;
+    assert!(matches!(resp, Response::Success { .. }));
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    std::fs::write(watch_dir.join("file.txt"), "v1").unwrap();
+
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let list_resp = send_raw_request(&paths, &Request::List).await;
+    if let Response::ProcessList { processes } = list_resp {
+        let p = processes
+            .iter()
+            .find(|p| p.name == "custom-debounce")
+            .unwrap();
+        assert_eq!(p.restarts, 0, "restart should wait for custom debounce");
+    } else {
+        panic!("expected process list");
+    }
+
+    let mut restarted = false;
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let list_resp = send_raw_request(&paths, &Request::List).await;
+        if let Response::ProcessList { processes } = list_resp {
+            let p = processes
+                .iter()
+                .find(|p| p.name == "custom-debounce")
+                .unwrap();
+            if p.restarts >= 1 {
+                restarted = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        restarted,
+        "custom debounce restart should eventually happen"
     );
 
     send_raw_request(&paths, &Request::Kill).await;

@@ -103,6 +103,7 @@ max_memory = "512M"                 # restart when memory exceeds this (supports
 # File watching
 watch = true                        # or a path like "./src"
 watch_ignore = ["node_modules", ".git"]
+watch_debounce = 500                # ms before restart after file changes (default: 500)
 
 # Dependencies and groups
 depends_on = ["db", "cache"]        # start after these processes are running
