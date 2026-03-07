@@ -39,7 +39,7 @@ max_memory = "512M"
 cron_restart = "0 3 * * *"`;
 
 const installCommand = "curl -LsSf https://pm3.frectonz.et/instal.sh | sh";
-const releaseTag = "v0.1.7";
+const releaseTag = "v0.1.8";
 const inlineCodeClass =
   "border border-fd-border bg-fd-card/80 px-1.5 py-0.5 font-mono text-[0.9em] text-fd-foreground";
 const quickStartCommand = "pm3 start";
