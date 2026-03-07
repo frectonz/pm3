@@ -4176,7 +4176,7 @@ async fn test_watch_debounce_respects_custom_duration() {
 
     let mut config = test_config("sleep 999");
     config.watch = Some(Watch::Path(watch_dir.to_string_lossy().to_string()));
-    config.watch_debounce = Some(1500);
+    config.watch_debounce = Some(3000);
     config.restart = Some(RestartPolicy::Never);
 
     let mut configs = HashMap::new();
@@ -4198,7 +4198,7 @@ async fn test_watch_debounce_respects_custom_duration() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     std::fs::write(watch_dir.join("file.txt"), "v1").unwrap();
 
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
     let list_resp = send_raw_request(&paths, &Request::List).await;
     if let Response::ProcessList { processes } = list_resp {
         let p = processes

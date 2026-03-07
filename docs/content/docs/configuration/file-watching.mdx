@@ -37,6 +37,19 @@ watch = "./src"
 watch_ignore = ["node_modules", ".git", "dist", "*.log"]
 ```
 
+### Debounce Duration
+
+```toml
+[web]
+command = "node server.js"
+watch = "./src"
+watch_debounce = 1000
+```
+
+**Type:** `integer` (milliseconds) | **Default:** `500`
+
+Controls how long pm3 waits after detecting a file change before triggering a restart. Increase this if rapid successive saves cause too many restarts.
+
 **Type:** `array of strings`
 
 Patterns in `watch_ignore` are matched against directory names and path suffixes. Common patterns to ignore:
@@ -47,7 +60,7 @@ Patterns in `watch_ignore` are matched against directory names and path suffixes
 
 ## Behavior
 
-- **Debounce:** File change events are debounced with a 500ms window. Multiple rapid changes trigger only one restart.
+- **Debounce:** File change events are debounced (default: 500ms, configurable via `watch_debounce`). Multiple rapid changes trigger only one restart.
 - **Restart:** When a change is detected, pm3 performs a graceful restart of the process (sends `kill_signal`, waits `kill_timeout`, then respawns).
 - **Restart counter:** File-watch restarts do **not** count toward `max_restarts`.
 
@@ -59,6 +72,7 @@ command = "npm run dev"
 cwd = "./frontend"
 watch = "./src"
 watch_ignore = ["node_modules", ".git"]
+watch_debounce = 1000
 
 [api]
 command = "cargo run"

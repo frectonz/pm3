@@ -20,6 +20,7 @@ interface Process {
   max_memory: string;
   watch: string;
   watch_ignore: string;
+  watch_debounce: string;
   depends_on: string;
   group: string;
   pre_start: string;
@@ -45,6 +46,7 @@ function defaultProcess(): Process {
     max_memory: "",
     watch: "",
     watch_ignore: "",
+    watch_debounce: "",
     depends_on: "",
     group: "",
     pre_start: "",
@@ -145,6 +147,10 @@ function generateToml(processes: Process[]): string {
         const arr = ignores.map((i) => `"${escapeTomlString(i)}"`).join(", ");
         lines.push(`watch_ignore = [${arr}]`);
       }
+    }
+
+    if (proc.watch_debounce) {
+      lines.push(`watch_debounce = ${proc.watch_debounce}`);
     }
 
     if (proc.depends_on) {
@@ -714,6 +720,24 @@ export function ConfigBuilder() {
                     />
                   </Field>
                 )}
+              <Field
+                id="watch-debounce"
+                label="Watch Debounce (ms)"
+                hint="Debounce duration before restart after file changes. Default: 500"
+              >
+                <input
+                  id="watch-debounce"
+                  type="number"
+                  className={inputClass}
+                  placeholder="500"
+                  value={proc.watch_debounce}
+                  onChange={(e) =>
+                    updateProcess(activeTab, {
+                      watch_debounce: e.target.value,
+                    })
+                  }
+                />
+              </Field>
               <Field
                 id="watch-ignore"
                 label="Watch Ignore"

@@ -141,6 +141,19 @@ command = "node server.js"
 kill_timeout = 10000
 ```
 
+## `watch_debounce`
+
+**Type:** `integer` (milliseconds) | **Default:** `500`
+
+How long to wait after detecting a file change before restarting the process. Increase this if rapid successive saves cause too many restarts.
+
+```toml
+[web]
+command = "node server.js"
+watch = "./src"
+watch_debounce = 1000
+```
+
 ## `depends_on`
 
 **Type:** `array of strings`
@@ -246,6 +259,7 @@ log_date_format = "%Y-%m-%d %H:%M:%S"
 health_check = "http://localhost:3000/health"
 watch = "./src"
 watch_ignore = ["node_modules", ".git"]
+watch_debounce = 500
 max_memory = "512M"
 cron_restart = "0 3 * * *"
 ```

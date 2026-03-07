@@ -40,6 +40,7 @@ command = "python worker.py"
 | `max_memory` | string | no | — | Memory limit, e.g. `"512M"`, `"1G"` (K/KB, M/MB, G/GB) |
 | `watch` | bool or string | no | — | `true` to watch cwd, or a specific path |
 | `watch_ignore` | string[] | no | — | Glob patterns to ignore when watching |
+| `watch_debounce` | integer (ms) | no | 500 | Debounce duration before restart after file changes |
 | `depends_on` | string[] | no | — | Process names that must start first |
 | `pre_start` | string | no | — | Command to run before starting the process |
 | `post_stop` | string | no | — | Command to run after the process stops |
